@@ -1,0 +1,5 @@
+{
+  "name": "El Juego del Reloj - Arcade Edition",
+  "description": "A high-fidelity 2D arcade game inspired by the physical education 'Clock Game'. Players must jump over a rotating rope to survive. Features multiple modes, difficulty levels, and AI-powered coach feedback.",
+  "requestFramePermissions": []
+}
