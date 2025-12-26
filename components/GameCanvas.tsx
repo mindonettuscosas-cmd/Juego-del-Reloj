@@ -17,18 +17,19 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ status, players, setPlayers, se
   const requestRef = useRef<number>(0);
   const playersRef = useRef<Player[]>(players);
   
-  // Internal physics state
+  // Lógica de Física interna
   const ropeAngleRef = useRef<number>(0);
   const ropeSpeedRef = useRef<number>(DIFFICULTY_CONFIGS[settings.difficulty].ropeSpeed);
   const ropeDirectionRef = useRef<number>(1);
   const startTimeRef = useRef<number>(Date.now());
   const lastTimeRef = useRef<number>(Date.now());
   
-  // Warm-up logic: distance to travel before collisions are active (2 * PI = 1 full rotation)
+  // Lógica de Calentamiento (Primera vuelta segura)
   const warmUpDistanceRef = useRef<number>(0);
   const [isWarmUp, setIsWarmUp] = useState(true);
+  const [showGo, setShowGo] = useState(false);
 
-  // Telegraphing / Change Direction logic
+  // Lógica de Aviso de cambio de dirección
   const [warning, setWarning] = useState(false);
   const isChangingDirectionRef = useRef(false);
 
@@ -36,15 +37,17 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ status, players, setPlayers, se
     playersRef.current = players;
   }, [players]);
 
-  // Reset physics when game starts/restarts
+  // Reiniciar física al empezar o reiniciar
   useEffect(() => {
     if (status === GameStatus.PLAYING) {
       ropeAngleRef.current = 0;
       warmUpDistanceRef.current = 0;
       setIsWarmUp(true);
+      setShowGo(false);
+      ropeSpeedRef.current = DIFFICULTY_CONFIGS[settings.difficulty].ropeSpeed;
       startTimeRef.current = Date.now();
     }
-  }, [status]);
+  }, [status, settings.difficulty]);
 
   const update = useCallback((time: number) => {
     if (status !== GameStatus.PLAYING) return;
@@ -55,23 +58,25 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ status, players, setPlayers, se
 
     const config = DIFFICULTY_CONFIGS[settings.difficulty];
     
-    // 1. Update Rope
+    // 1. Actualizar Cuerda
     if (!isChangingDirectionRef.current) {
       ropeSpeedRef.current += config.acceleration * dt;
       const movement = ropeSpeedRef.current * ropeDirectionRef.current * dt;
       ropeAngleRef.current += movement;
       
-      // Track warm-up distance
+      // Control de la vuelta de cortesía
       if (warmUpDistanceRef.current < Math.PI * 2) {
         warmUpDistanceRef.current += Math.abs(movement);
         if (warmUpDistanceRef.current >= Math.PI * 2) {
           setIsWarmUp(false);
-          // Actual survival time starts now
-          startTimeRef.current = Date.now();
+          setShowGo(true);
+          startTimeRef.current = Date.now(); // El tiempo de supervivencia empieza tras la vuelta
+          audioService.playJump(); // Sonido de inicio
+          setTimeout(() => setShowGo(false), 1000);
         }
       }
       
-      // Random direction change (only after warm-up to keep it simple)
+      // Cambios de dirección aleatorios (solo tras el calentamiento)
       if (!isWarmUp && config.directionChangeProb > 0 && Math.random() < config.directionChangeProb && !warning) {
         setWarning(true);
         isChangingDirectionRef.current = true;
@@ -84,7 +89,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ status, players, setPlayers, se
       }
     }
 
-    // 2. Update Players & Check Collisions
+    // 2. Colisiones y Estado de Jugadores
     let activePlayersCount = 0;
     const nextPlayers = playersRef.current.map(p => {
       if (p.isEliminated) return p;
@@ -95,7 +100,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ status, players, setPlayers, se
         isJumping = false;
       }
 
-      // Check collision ONLY IF warm-up is over
+      // NO hay colisiones durante isWarmUp
       const dist = Math.abs((ropeAngleRef.current % (Math.PI * 2)) - (p.angle % (Math.PI * 2)));
       const wrappedDist = Math.min(dist, Math.PI * 2 - dist);
       
@@ -118,7 +123,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ status, players, setPlayers, se
         isJumping,
         lives,
         isEliminated,
-        // Survival time only counts after warm-up
         survivalTime: !isEliminated && !isWarmUp ? (now - startTimeRef.current) / 1000 : p.survivalTime
       };
     });
@@ -147,20 +151,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ status, players, setPlayers, se
 
     ctx.clearRect(0, 0, w, h);
 
-    // Floor Shadow
+    // Sombra del suelo
     ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
     ctx.beginPath();
     ctx.arc(cx, cy, r + 40, 0, Math.PI * 2);
     ctx.fill();
 
-    // Clock Circle
-    ctx.strokeStyle = isWarmUp ? 'rgba(34, 211, 238, 0.2)' : 'rgba(100, 116, 139, 0.4)';
+    // Círculo del Reloj
+    ctx.strokeStyle = isWarmUp ? 'rgba(34, 211, 238, 0.15)' : 'rgba(100, 116, 139, 0.4)';
     ctx.lineWidth = 8;
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Draw Telegraph Sector
+    // Telegraph (Aviso de dirección)
     if (warning) {
       ctx.fillStyle = 'rgba(239, 68, 68, 0.2)';
       ctx.beginPath();
@@ -171,7 +175,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ status, players, setPlayers, se
       ctx.fill();
     }
 
-    // Players
+    // Dibujar Jugadores
     playersRef.current.forEach(p => {
       const px = cx + Math.cos(p.angle) * r;
       const py = cy + Math.sin(p.angle) * r;
@@ -179,6 +183,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ status, players, setPlayers, se
       ctx.save();
       ctx.translate(px, py);
       
+      // Salto
       if (p.isJumping) {
         const jumpProgress = (Date.now() - p.jumpStartTime) / JUMP_DURATION;
         const jumpHeight = Math.sin(jumpProgress * Math.PI) * 40;
@@ -191,6 +196,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ status, players, setPlayers, se
         ctx.scale(0.8, 0.8);
       }
 
+      // Aura de seguridad durante Warm-up
+      if (isWarmUp) {
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = '#22d3ee';
+        ctx.strokeStyle = '#22d3ee';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, 25, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Cuerpo
       ctx.shadowBlur = 10;
       ctx.shadowColor = p.color;
       ctx.fillStyle = p.color;
@@ -198,6 +215,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ status, players, setPlayers, se
       ctx.arc(0, 0, 18, 0, Math.PI * 2);
       ctx.fill();
 
+      // Tecla
+      ctx.shadowBlur = 0;
       ctx.fillStyle = 'white';
       ctx.font = '12px "Press Start 2P"';
       ctx.textAlign = 'center';
@@ -207,13 +226,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ status, players, setPlayers, se
       ctx.restore();
     });
 
-    // Rope
+    // Dibujar Cuerda
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(ropeAngleRef.current);
     
-    // Rope Shadow
-    ctx.shadowBlur = 0;
+    // Sombra cuerda
     ctx.strokeStyle = 'rgba(0,0,0,0.3)';
     ctx.lineWidth = 6;
     ctx.beginPath();
@@ -221,44 +239,43 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ status, players, setPlayers, se
     ctx.lineTo(r + 20, 10);
     ctx.stroke();
 
-    // Rope Color (Change based on warm-up state)
+    // Color cuerda (Cian en warm-up, Blanco en juego)
     ctx.strokeStyle = isWarmUp ? '#22d3ee' : '#f8fafc';
     ctx.lineWidth = 4;
+    ctx.shadowBlur = isWarmUp ? 15 : 5;
+    ctx.shadowColor = isWarmUp ? '#22d3ee' : 'white';
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.lineTo(r + 10, 0);
     ctx.stroke();
 
-    // Rope End
+    // Punta cuerda
     ctx.fillStyle = isWarmUp ? '#67e8f9' : '#cbd5e1';
     ctx.beginPath();
     ctx.arc(r + 10, 0, 8, 0, Math.PI * 2);
     ctx.fill();
     
-    // Core
-    ctx.fillStyle = '#64748b';
-    ctx.beginPath();
-    ctx.arc(0, 0, 15, 0, Math.PI * 2);
-    ctx.fill();
-    
     ctx.restore();
 
-    // HUD Text for Warm-up
+    // HUD de Calentamiento
     if (isWarmUp) {
       ctx.fillStyle = '#22d3ee';
       ctx.font = '20px "Press Start 2P"';
       ctx.textAlign = 'center';
       ctx.shadowBlur = 10;
       ctx.shadowColor = '#22d3ee';
-      ctx.fillText('¡PREPÁRATE!', cx, cy - 60);
+      ctx.fillText('¡PREPÁRATE!', cx, cy - 80);
       
-      // Progress bar for warm-up
+      // Anillo de progreso central
       const progress = warmUpDistanceRef.current / (Math.PI * 2);
-      ctx.strokeStyle = 'rgba(34, 211, 238, 0.3)';
-      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(34, 211, 238, 0.4)';
+      ctx.lineWidth = 6;
       ctx.beginPath();
-      ctx.arc(cx, cy, 50, -Math.PI/2, (-Math.PI/2) + (progress * Math.PI * 2));
+      ctx.arc(cx, cy, 60, -Math.PI/2, (-Math.PI/2) + (progress * Math.PI * 2));
       ctx.stroke();
+      
+      ctx.font = '12px "Press Start 2P"';
+      ctx.fillText('VUELTA DE SEGURIDAD', cx, cy + 80);
     }
   }, [warning, isWarmUp]);
 
@@ -310,16 +327,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ status, players, setPlayers, se
   }, []);
 
   return (
-    <div className="w-full h-full">
+    <div className="w-full h-full relative">
       <canvas ref={canvasRef} className="block cursor-none" />
+      
+      {/* Aviso de Peligro */}
       {warning && (
-        <div className="absolute top-10 left-1/2 -translate-x-1/2 bg-red-600 px-6 py-2 rounded-full arcade-font text-white animate-bounce shadow-lg border-2 border-white">
-          ¡CUIDADO!
+        <div className="absolute top-10 left-1/2 -translate-x-1/2 bg-red-600 px-6 py-2 rounded-full arcade-font text-white animate-bounce shadow-lg border-2 border-white z-20">
+          ¡CAMBIO!
         </div>
       )}
-      {!isWarmUp && warmUpDistanceRef.current < (Math.PI * 2 + 0.5) && (
-         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <span className="arcade-font text-6xl text-yellow-400 animate-ping">¡YA!</span>
+
+      {/* Cartel de YA */}
+      {showGo && (
+         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30">
+            <span className="arcade-font text-7xl text-yellow-400 animate-ping drop-shadow-[0_0_15px_rgba(250,204,21,0.8)]">¡YA!</span>
          </div>
       )}
     </div>
